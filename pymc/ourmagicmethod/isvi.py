@@ -1,53 +1,57 @@
 import pymc as pm
 from pymc.variational.approximations import MeanField
-from typing import Optional, Union, Sequence, List
-from aesara.graph.basic import Variable
+from aesara.tensor.random.op import RandomVariable
+import aesara.tensor as at
+from typing import List, Tuple
 
 
-class PsiWrapper(pm.Model):
-    def __init__(self, wrapped_model, lam=2.0, qmethod="meanfield", num_kl_samples=10):
-        super(PsiWrapper, self).__init__()
-        self.wrapped_model = wrapped_model
-        self.lam = lam
-
-        # q(x;theta) is the variational approximation. IDK where 'theta' is defined except that there is some q.mean and q.cov
-        inf_kwargs = {}  # Placeholder (see inference.py)
-        self.q = MeanField(model=wrapped_model, **inf_kwargs)
-
-    def logp(
-        self,
-        vars: Optional[Union[Variable, Sequence[Variable]]] = None,
-        jacobian: bool = True,
-        sum: bool = True,
-    ) -> Union[Variable, List[Variable]]:
-        """COMPUTE LOG(PSI)
-        """
-        theta = vars
-        # TODO - make this...
-        # STEP 1: set parameters of q equal to theta. q.mean.set(theta[:2]), q.cov.set(...)
-        # STEP 2: get logdet(Fisher(q)) # TODO ourselves
-        # STEP 3: get kl(q||p)  (look inside ADVI)
-        return 1/2*logdet_fisher - self.lam * kl_qp
-
-    def dlogp(
-        self,
-        vars: Optional[Union[Variable, Sequence[Variable]]] = None,
-        jacobian: bool = True,
-    ) -> Variable:
-        """COMPUTE GRAD OF LOG(PSI) WRT THETA
-        """
-        theta = vars
-        ... # TODO (if pm.sample uses this)
-
-    def logp_dlogp_function(self, grad_vars=None, tempered=False, **kwargs):
-        """COMPUTE BOTH
-        """
-        theta = vars
-        ... # TODO (if pm.sample uses this)
+def _logdet_fisher(q):
+    if isinstance(q, MeanField):
+        return at.sum(at.log(q.std))
+    else:
+        raise TypeError("logdet_fisher only implemented for MeanField so far")
 
 
-def isvi(model=None):
-    if model is None:
-        model = pm.modelcontext(model)
-    wrapped = PsiWrapper(model)
-    pm.sample(model=wrapped)
+class ThetaRV(RandomVariable):
+    # See docs here: https://www.pymc.io/projects/docs/en/latest/contributing/implementing_distribution.html
+    name: str = "theta_mu"
+    ndim_supp: int = 1  # theta 'output' is a vector, so ndim=1
+    ndims_params: List[int] = [1, 1]  # theta 'inputs' are mu, sigma, each of which is a vector
+    _print_name: Tuple[str, str] = ("θ", r"\theta")
+    dtype: str = "floatX"
+
+    @classmethod
+    def rng_fn(cls, rng, *args, **kwargs):
+        # See https://www.pymc.io/projects/docs/en/latest/api/distributions/generated/pymc.Flat.html
+        raise NotImplementedError("Cannot sample from the prior over theta")
+
+
+theta = ThetaRV()
+
+
+class MixingDistribution(pm.Continuous):
+    rv_op = theta
+
+    @classmethod
+    def dist(cls, wrapped_model: pm.Model, lam=2.0, **kwargs):
+        _q = MeanField(model=wrapped_model)
+        params = [_q.params, lam]
+        return super().dist(params, **kwargs)
+
+    def moment(rv, size, *args, **kwargs):
+        # TODO - return some good starting value for theta
+        #    See https://www.pymc.io/projects/docs/en/latest/api/distributions/generated/pymc.Flat.html
+        pass
+
+    def logp(self, *args, **kwargs):
+        # TODO - evaluate log psi(θ), where θ is somehow passed in here
+        #    See https://www.pymc.io/projects/docs/en/latest/api/distributions/generated/pymc.Flat.html
+        # This is the key definition of log psi(theta)
+        return 1 / 2 * _logdet_fisher(self._q) - self.lam * self._kl.apply(f=None)
+
+
+def isvi(model=None, **kwargs):
+    model = pm.modelcontext(model)
+    with pm.Model() as psi_wrapper:
+        MixingDistribution("theta", wrapped_model=model, **kwargs)
+    return pm.sample(model=psi_wrapper, **kwargs)
