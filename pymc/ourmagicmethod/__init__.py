@@ -1,1 +1,1 @@
-from .isvi import isvi
+from .sample_stochastic_mixture import sample_stochastic_mixture

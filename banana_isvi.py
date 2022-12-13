@@ -9,7 +9,7 @@ with pm.Model() as model:
 
 #%% Run ours
 
-isvi_result = pm.isvi(model=model)
+our_result = pm.sample_stochastic_mixture(model=model)
 
 #%% Run and plot ADVI
 advi_result = pm.fit(model=model, method="advi")
